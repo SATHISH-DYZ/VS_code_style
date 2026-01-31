@@ -82,16 +82,15 @@ class StorageService {
     }
 
     async saveFile(filePath, name, content, isDir) {
-        console.log(`[StorageService] 💾 Saving to DB: ${filePath} (isDir: ${isDir})`);
+        console.log(`[StorageService] 💾 Saving to DB & Bucket: ${filePath} (isDir: ${isDir})`);
 
         try {
-            // Ensure parent directories exist in DB
+            // 1. Ensure parent directories exist in DB (Index logic)
             if (filePath.includes('/')) {
                 const parts = filePath.split('/');
                 for (let i = 1; i < parts.length; i++) {
                     const parentPath = parts.slice(0, i).join('/');
                     const parentName = parts[i - 1];
-                    // Fast upsert for parents (don't need content)
                     await supabase.from('workspace_files').upsert({
                         path: parentPath,
                         name: parentName,
@@ -102,7 +101,36 @@ class StorageService {
                 }
             }
 
-            // Use upsert to handle both insert and update atomically.
+            // 2. Upload to Supabase Storage (Visual Folder logic)
+            try {
+                if (isDir) {
+                    // Supabase Storage needs an object to "show" a folder. 
+                    // We create a hidden .placeholder file.
+                    await supabase.storage
+                        .from('workspace')
+                        .upload(`${DEFAULT_USER_ID}/${filePath}/.placeholder`, '', {
+                            upsert: true,
+                            contentType: 'text/plain'
+                        });
+                    console.log(`[StorageService] 📁 Created folder placeholder for: ${filePath}`);
+                } else if (content !== null) {
+                    const { error: bucketError } = await supabase.storage
+                        .from('workspace')
+                        .upload(`${DEFAULT_USER_ID}/${filePath}`, content, {
+                            upsert: true,
+                            contentType: 'text/plain'
+                        });
+                    if (bucketError) {
+                        console.warn(`[StorageService] ⚠️ Bucket upload failed:`, bucketError.message);
+                    } else {
+                        console.log(`[StorageService] ☁️ Uploaded ${filePath} to bucket.`);
+                    }
+                }
+            } catch (bucketCatch) {
+                console.warn(`[StorageService] ⚠️ Bucket operation skipped:`, bucketCatch.message);
+            }
+
+            // 3. Save to Table (Search & Fast List logic)
             const { data, error } = await supabase
                 .from('workspace_files')
                 .upsert({
@@ -118,11 +146,11 @@ class StorageService {
                 .select();
 
             if (error) {
-                console.error(`[StorageService] ❌ Upsert Error for ${filePath}:`, error.message);
+                console.error(`[StorageService] ❌ Table Upsert Error for ${filePath}:`, error.message);
                 throw error;
             }
 
-            console.log(`[StorageService] ✅ Successfully saved ${filePath} in DB`);
+            console.log(`[StorageService] ✅ Successfully saved ${filePath} in DB/Bucket`);
             return data;
 
         } catch (err) {
@@ -132,6 +160,7 @@ class StorageService {
     }
 
     async deleteFile(filePath) {
+        // 1. Delete from Table
         const { error } = await supabase
             .from('workspace_files')
             .delete()
@@ -139,38 +168,34 @@ class StorageService {
             .or(`path.eq.${filePath},path.like.${filePath}/%`);
 
         if (error) throw error;
+
+        // 2. Delete from Bucket (Ignore errors if bucket isn't setup)
+        try {
+            await supabase.storage
+                .from('workspace')
+                .remove([`${DEFAULT_USER_ID}/${filePath}`]);
+        } catch (e) { }
     }
 
     async renameFile(oldPath, newPath) {
         console.log(`[StorageService] 📂 Renaming: ${oldPath} -> ${newPath}`);
 
-        // Fetch original file and its children belonging to this user
         const { data, error: fetchError } = await supabase
             .from('workspace_files')
             .select('*')
             .match({ user_id: DEFAULT_USER_ID })
             .or(`path.eq.${oldPath},path.like.${oldPath}/%`);
 
-        if (fetchError) {
-            console.error('[StorageService] ❌ Fetch Error during rename:', fetchError.message);
-            throw fetchError;
-        }
+        if (fetchError) throw fetchError;
 
         for (const row of data) {
             const subPath = row.path.replace(oldPath, newPath);
             const name = subPath.split('/').pop();
 
-            console.log(`[StorageService] 📝 Moving: ${row.path} -> ${subPath}`);
-
-            // Use the resilient saveFile logic (upsert) to handle potential exists-already cases
             await this.saveFile(subPath, name, row.content, row.is_dir);
 
-            // Delete old path if it was actually moved
             if (row.path !== subPath) {
-                await supabase
-                    .from('workspace_files')
-                    .delete()
-                    .match({ path: row.path, user_id: DEFAULT_USER_ID });
+                await this.deleteFile(row.path);
             }
         }
     }
