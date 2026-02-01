@@ -58,7 +58,7 @@ export default function IDELayout() {
     const [terminals, setTerminals] = useState([{ id: "t1", title: "terminal", output: [], busy: false }]);
     const [activeTerminalId, setActiveTerminalId] = useState("t1");
     const [isExecuting, setIsExecuting] = useState(false);
-    const [currentPath, setCurrentPath] = useState([]); // Array of folder names
+    const [currentPath, setCurrentPath] = useState(""); // String path for prompt
     const [selectedFolderId, setSelectedFolderId] = useState(null);
     const [editingId, setEditingId] = useState(null);
     const [isSaving, setIsSaving] = useState(false);
@@ -337,6 +337,10 @@ export default function IDELayout() {
             setFiles(prev => mergeFolderStates(prev, fileTree));
         });
 
+        socketRef.current.on("terminal:cwd", (path) => {
+            setCurrentPath(path);
+        });
+
         socketRef.current.on("file:read:response", ({ path, content }) => {
             setOpenFiles(prev => prev.map(f => f.id === path ? { ...f, content } : f));
         });
@@ -463,7 +467,8 @@ export default function IDELayout() {
                     return t;
                 }
                 // If not busy, it's a shell command, so show the prompt line.
-                const logLine = `➜  ~ ${rawCmd}`;
+                const promptPath = currentPath ? `\\${currentPath}` : "";
+                const logLine = `Teachgrid${promptPath}> ${rawCmd}`;
                 return { ...t, output: [...t.output, logLine] };
             }
             return t;
@@ -705,7 +710,7 @@ export default function IDELayout() {
                                     onCommand={handleTerminalCommand}
                                     onClear={() => setTerminals(prev => prev.map(t => t.id === activeTerminalId ? { ...t, output: [] } : t))}
                                     onClose={(e) => closeTerminal(e, activeTerminalId)}
-                                    path={`~${currentPath.length > 0 ? '/' + currentPath.join('/') : ''}`}
+                                    path={currentPath}
                                     busy={terminals.find(t => t.id === activeTerminalId)?.busy || false}
                                 />
                             )}

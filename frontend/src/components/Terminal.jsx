@@ -54,11 +54,11 @@ export default function Terminal({ output, onCommand, onClear, onClose, path = "
 
                 {output.map((line, i) => (
                     <div key={i} className="terminal-line">
-                        {line.startsWith("➜") ? (
+                        {line.includes(">") ? (
                             <>
-                                <span className="prompt">➜</span>
+                                <span className="prompt">{line.split(">")[0]}{'>'}</span>
                                 <span className="command">
-                                    {line.slice(1)}
+                                    {line.split(">")[1]}
                                 </span>
                             </>
                         ) : (
@@ -69,8 +69,7 @@ export default function Terminal({ output, onCommand, onClear, onClose, path = "
 
                 {/* Input - Always visible to allow interaction with running processes */}
                 <div className="terminal-input">
-                    {!busy && <span className="prompt">➜</span>}
-                    {!busy && <span className="path">{path}</span>}
+                    {!busy && <span className="prompt">Teachgrid{path === "~" || !path ? "" : `\\${path}`}{'>'}</span>}
                     <input
                         ref={inputRef}
                         value={input}

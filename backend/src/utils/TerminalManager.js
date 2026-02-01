@@ -81,7 +81,8 @@ class TerminalManager {
             'll': 'dir',
             'cat': 'type',
             'rm': 'del',
-            'clear': 'cls'
+            'clear': 'cls',
+            'pwd': 'echo %cd%'
         };
         const parts = trimmedCmd.split(' ');
         if (aliases[parts[0]]) {
