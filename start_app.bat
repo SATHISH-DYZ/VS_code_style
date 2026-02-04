@@ -1,21 +1,12 @@
 @echo off
-echo Starting TeachGrid IDE...
+echo Starting TeachGrid Project Locally...
 
-:: Start Backend
-echo Starting Backend Server...
-start "TeachGrid Backend" cmd /k "cd backend && npm start"
+:: Navigate to backend and start
+start cmd /k "cd backend && (if not exist node_modules npm install) & npm run dev"
 
-:: Wait a moment for backend to initialize
-timeout /t 5 /nobreak
+:: Navigate to frontend and start
+start cmd /k "cd frontend && (if not exist node_modules npm install) & npm start"
 
-:: Start Frontend
-echo Starting Frontend Application...
-start "TeachGrid Frontend" cmd /k "cd frontend && npm start"
 
-echo.
-echo Application started!
-echo Frontend: http://localhost:3000
-echo Backend:  http://localhost:3001
-echo.
-echo Close the popup command windows to stop the servers.
+echo Project is starting in separate windows.
 pause

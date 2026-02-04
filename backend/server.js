@@ -54,10 +54,12 @@ app.use('/api/db', dbRoutes);
 const activeSessions = new Map();
 
 io.on('connection', (socket) => {
-    console.log(`[${new Date().toISOString()}] Client connected: ${socket.id}`);
+    const userId = socket.handshake.query.userId || 'anonymous';
+    console.log(`[${new Date().toISOString()}] Client connected: ${socket.id} (User: ${userId})`);
 
     const sessionData = {
         socketId: socket.id,
+        userId: userId,
         containerName: null,
         pty: null,
         cleanupHandler: null
@@ -93,7 +95,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('terminal:init', () => {
-        TerminalManager.createSession(socket.id, socket);
+        TerminalManager.createSession(socket.id, socket, userId);
         console.log(`[${socket.id}] Terminal session initialized`);
     });
 
@@ -101,6 +103,7 @@ io.on('connection', (socket) => {
         if (socket._ptyProcess) {
             // If a code execution PTY is active, send input there (interactive mode)
             try {
+                socket._lastInput = data; // Store last input for echo suppression in localExecutor
                 socket._ptyProcess.write(data);
             } catch (err) {
                 console.error("Error writing to PTY:", err);
@@ -115,7 +118,7 @@ io.on('connection', (socket) => {
 
     socket.on('files:list', async () => {
         try {
-            const tree = await StorageService.listFiles();
+            const tree = await StorageService.listFiles(userId);
             socket.emit('files:list:response', tree || []);
         } catch (err) {
             console.error("Error listing files:", err);
@@ -126,7 +129,7 @@ io.on('connection', (socket) => {
     socket.on('file:read', async (data) => {
         try {
             const { path: filePath } = data;
-            const content = await StorageService.readFile(filePath);
+            const content = await StorageService.readFile(userId, filePath);
             socket.emit('file:read:response', { path: filePath, content });
         } catch (err) {
             console.error("Error reading file:", err);
@@ -142,14 +145,15 @@ io.on('connection', (socket) => {
             const name = filePath.split('/').pop();
 
             // Sync to local disk for execution engine compatibility
-            const projectRoot = path.join(os.tmpdir(), 'teachgrid-workspace');
+            const projectRoot = path.join(os.tmpdir(), 'teachgrid-workspace', userId);
             const fullLocalPath = path.join(projectRoot, filePath);
             const localDir = isDir ? fullLocalPath : path.dirname(fullLocalPath);
 
             if (!fs.existsSync(localDir)) fs.mkdirSync(localDir, { recursive: true });
             if (!isDir) fs.writeFileSync(fullLocalPath, content);
 
-            await StorageService.saveFile(filePath, name, content, isDir || false);
+            // Pass userId to StorageService
+            await StorageService.saveFile(userId, filePath, name, content, isDir || false);
             socket.emit('file:saved', { path: filePath });
         } catch (err) {
             console.error("Error saving file:", err);
@@ -162,13 +166,13 @@ io.on('connection', (socket) => {
             const { path: filePath } = data;
 
             // Local disk cleanup
-            const projectRoot = path.join(os.tmpdir(), 'teachgrid-workspace');
+            const projectRoot = path.join(os.tmpdir(), 'teachgrid-workspace', userId);
             const fullLocalPath = path.join(projectRoot, filePath);
             if (fs.existsSync(fullLocalPath)) {
                 fs.rmSync(fullLocalPath, { recursive: true, force: true });
             }
 
-            await StorageService.deleteFile(filePath);
+            await StorageService.deleteFile(userId, filePath);
             socket.emit('file:deleted', { path: filePath });
         } catch (err) {
             console.error("Error deleting file:", err);
@@ -181,7 +185,7 @@ io.on('connection', (socket) => {
             const { oldPath, newPath } = data;
 
             // Local disk rename
-            const projectRoot = path.join(os.tmpdir(), 'teachgrid-workspace');
+            const projectRoot = path.join(os.tmpdir(), 'teachgrid-workspace', userId);
             const fullOldPath = path.join(projectRoot, oldPath);
             const fullNewPath = path.join(projectRoot, newPath);
             if (fs.existsSync(fullOldPath)) {
@@ -189,8 +193,7 @@ io.on('connection', (socket) => {
                 fs.renameSync(fullOldPath, fullNewPath);
             }
 
-            await StorageService.renameFile(oldPath, newPath);
-
+            await StorageService.renameFile(userId, oldPath, newPath);
 
             socket.emit('file:renamed', { oldPath, newPath });
         } catch (err) {

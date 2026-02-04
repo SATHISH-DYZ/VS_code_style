@@ -38,10 +38,11 @@ class TerminalManager {
 
     // Initialize a session with default CWD
     // Initialize a session with default CWD
-    createSession(socketId, socket) {
+    createSession(socketId, socket, userId) {
         if (!this.sessions[socketId]) {
-            // Default to Temp Workspace
-            const root = path.join(os.tmpdir(), 'teachgrid-workspace');
+            // Default to Temp Workspace namespaced by userId
+            const safeUserId = userId || 'anonymous';
+            const root = path.join(os.tmpdir(), 'teachgrid-workspace', safeUserId);
             if (!fs.existsSync(root)) fs.mkdirSync(root, { recursive: true });
             this.sessions[socketId] = {
                 cwd: root,
@@ -74,6 +75,7 @@ class TerminalManager {
 
         if (!trimmedCmd) return;
 
+<<<<<<< HEAD
         // --- Aliases for Windows CMD ---
         const aliases = {
             'ls': 'dir',
@@ -87,6 +89,24 @@ class TerminalManager {
         if (aliases[parts[0]]) {
             parts[0] = aliases[parts[0]];
             trimmedCmd = parts.join(' ');
+=======
+        // --- Aliases ---
+        if (process.platform === 'win32') {
+            const aliases = {
+                'ls': 'dir /b',
+                'dir': 'dir /b',
+                'll': 'dir',
+                'cat': 'type',
+                'rm': 'del',
+                'clear': 'cls',
+                'pwd': 'echo %cd%'
+            };
+            const parts = trimmedCmd.split(' ');
+            if (aliases[parts[0]]) {
+                parts[0] = aliases[parts[0]];
+                trimmedCmd = parts.join(' ');
+            }
+>>>>>>> f56aa7769833d7fe590f81c8942a0290a924f91c
         }
 
         // --- Handle 'cd' internally ---

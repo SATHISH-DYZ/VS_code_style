@@ -9,7 +9,7 @@ import { ensurePythonPackages } from '../utils/pythonPkgManager.js';
 import { ensureJavaPackages } from '../utils/javaPkgManager.js';
 import { detectPackages } from '../utils/packageDetector.js';
 
-export async function executeLocalCode(socket, payload) {
+export async function executeLocalCode(socket, payload, userId) {
     const { language, code, fileName } = payload;
 
     const langConfig = LANGUAGES[language];
@@ -58,7 +58,8 @@ export async function executeLocalCode(socket, payload) {
 
     // ---------------- WORKSPACE ----------------
     // Use the shared workspace so files are persistent and match the terminal's view
-    const tempDir = path.join(os.tmpdir(), 'teachgrid-workspace');
+    const safeUserId = userId || 'anonymous';
+    const tempDir = path.join(os.tmpdir(), 'teachgrid-workspace', safeUserId);
     await fs.mkdir(tempDir, { recursive: true });
 
     const filePath = path.join(tempDir, fileName);
@@ -133,8 +134,17 @@ export async function executeLocalCode(socket, payload) {
 
     // Stream output
     ptyProcess.onData(data => {
-        const cleaned = filterOutput(data);
-        if (cleaned.trim() || cleaned.includes('\n')) {
+        let cleaned = filterOutput(data);
+
+        // --- ECHO SUPPRESSION ---
+        // If the PTY data starts with the last sent input, it's likely an echo.
+        // Strip it to prevent double-display in the custom terminal.
+        if (socket._lastInput && cleaned.startsWith(socket._lastInput)) {
+            cleaned = cleaned.substring(socket._lastInput.length);
+            socket._lastInput = null; // Clear once handled
+        }
+
+        if (cleaned) {
             socket.emit('output', cleaned);
         }
     });

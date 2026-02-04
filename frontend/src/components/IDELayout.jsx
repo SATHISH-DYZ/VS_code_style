@@ -58,7 +58,7 @@ export default function IDELayout() {
     const [terminals, setTerminals] = useState([{ id: "t1", title: "terminal", output: [], busy: false }]);
     const [activeTerminalId, setActiveTerminalId] = useState("t1");
     const [isExecuting, setIsExecuting] = useState(false);
-    const [currentPath, setCurrentPath] = useState([]); // Array of folder names
+    const [currentPath, setCurrentPath] = useState(""); // String path for prompt
     const [selectedFolderId, setSelectedFolderId] = useState(null);
     const [editingId, setEditingId] = useState(null);
     const [isSaving, setIsSaving] = useState(false);
@@ -171,10 +171,17 @@ export default function IDELayout() {
         if (!activeFile) return;
 
         // --- WEB INTERCEPTOR ---
+<<<<<<< HEAD
         const ext = activeFile.name.split('.').pop().toLowerCase();
         if (['html', 'htm', 'jsx', 'tsx', 'vue', 'svelte'].includes(ext)) {
             setShowPreview(true);
             setPreviewOutput(null);
+=======
+        // If it's a web file, open preview instead of running on backend
+        const ext = activeFile.name.split('.').pop().toLowerCase();
+        if (['html', 'htm', 'jsx', 'tsx', 'vue', 'svelte'].includes(ext)) {
+            setShowPreview(true);
+>>>>>>> f56aa7769833d7fe590f81c8942a0290a924f91c
             setActivePanel("terminal");
             setTerminals(prev => prev.map(t =>
                 t.id === activeTerminalId ? {
@@ -185,6 +192,7 @@ export default function IDELayout() {
             return;
         }
 
+<<<<<<< HEAD
         // --- PHP / SERVER-SIDE PREVIEW ---
         if (ext === 'php') {
             setShowPreview(true);
@@ -192,6 +200,8 @@ export default function IDELayout() {
             setPreviewOutput(""); // Clear previous output
         }
 
+=======
+>>>>>>> f56aa7769833d7fe590f81c8942a0290a924f91c
         if (isExecuting) {
             alert("Code is already running. Please wait.");
             return;
@@ -336,7 +346,17 @@ export default function IDELayout() {
     useEffect(() => { isCapturingRef.current = isCapturingPreview; }, [isCapturingPreview]);
 
     useEffect(() => {
-        socketRef.current = io(BACKEND_URL);
+        // Generate or retrieve persistent User ID
+        let userId = localStorage.getItem('teachgrid_user_id');
+        if (!userId) {
+            userId = 'user_' + generateId();
+            localStorage.setItem('teachgrid_user_id', userId);
+        }
+        console.log('[Frontend] Connecting with User ID:', userId);
+
+        socketRef.current = io(BACKEND_URL, {
+            query: { userId }
+        });
 
         socketRef.current.on("connect", () => {
             socketRef.current.emit("terminal:init");
@@ -360,6 +380,10 @@ export default function IDELayout() {
             setFiles(prev => mergeFolderStates(prev, fileTree));
         });
 
+        socketRef.current.on("terminal:cwd", (path) => {
+            setCurrentPath(path);
+        });
+
         socketRef.current.on("file:read:response", ({ path, content }) => {
             setOpenFiles(prev => prev.map(f => f.id === path ? { ...f, content } : f));
         });
@@ -371,6 +395,12 @@ export default function IDELayout() {
 
         socketRef.current.on("terminal:status", ({ busy }) => {
             setTerminals(prev => prev.map(t => t.id === activeTerminalIdRef.current ? { ...t, busy } : t));
+        });
+
+        socketRef.current.on("terminal:clear", () => {
+            setTerminals(prev => prev.map(t =>
+                t.id === activeTerminalIdRef.current ? { ...t, output: [] } : t
+            ));
         });
 
         socketRef.current.on("error", errorMsg => {
@@ -412,7 +442,7 @@ export default function IDELayout() {
 
     /* ================= RENDER HELPERS ================= */
 
-    const renderTree = (items, level = 0) =>
+    const renderTree = (items, level = 0, parentId = null) =>
         items.map(item => (
             <div key={item.id}>
                 <div
@@ -420,12 +450,15 @@ export default function IDELayout() {
                         } ${selectedFolderId === item.id ? "selected" : ""}`}
                     style={{ paddingLeft: `${level * 14 + 12}px` }}
                     onContextMenu={(e) => handleContextMenu(e, item)}
-                    onClick={() => {
+                    onClick={(e) => {
+                        e.stopPropagation(); // Prevent bubbling to background
                         if (item.isDir) {
                             setFiles(prev => toggleFolderRecursive(prev, item.id));
                             setSelectedFolderId(item.id);
                         } else {
                             openFile(item);
+                            // Set context to the parent folder when a file is clicked
+                            setSelectedFolderId(parentId);
                         }
                     }}
                 >
@@ -439,7 +472,7 @@ export default function IDELayout() {
                     />
                 </div>
                 {item.isDir && item.isOpen && item.children && (
-                    <div className="tree-children">{renderTree(item.children, level + 1)}</div>
+                    <div className="tree-children">{renderTree(item.children, level + 1, item.id)}</div>
                 )}
             </div>
         ));
@@ -467,7 +500,7 @@ export default function IDELayout() {
         const rawCmd = cmd.trim();
         // Allow empty commands if sending newline to stdin
         if (rawCmd === '' && terminals.find(t => t.id === activeTerminalId)?.busy) {
-            if (socketRef.current?.connected) socketRef.current.emit("terminal:input", '\n');
+            if (socketRef.current?.connected) socketRef.current.emit("terminal:input", '\r\n');
             return;
         }
         if (!rawCmd) return;
@@ -480,7 +513,8 @@ export default function IDELayout() {
                     return t;
                 }
                 // If not busy, it's a shell command, so show the prompt line.
-                const logLine = `➜  ~ ${rawCmd}`;
+                const promptPath = currentPath ? `\\${currentPath}` : "";
+                const logLine = `Teachgrid${promptPath}> ${rawCmd}`;
                 return { ...t, output: [...t.output, logLine] };
             }
             return t;
@@ -491,8 +525,8 @@ export default function IDELayout() {
             if (rawCmd === '\x03') {
                 socketRef.current.emit("terminal:input", rawCmd);
             } else {
-                // Otherwise append newline specifically
-                socketRef.current.emit("terminal:input", rawCmd + '\n');
+                // Use \r\n for Windows CMD PTY compatibility during interactive sessions
+                socketRef.current.emit("terminal:input", rawCmd + '\r\n');
             }
         }
     };
@@ -524,7 +558,10 @@ export default function IDELayout() {
                                 </div>
                             )}
                         </header>
-                        <div className="sidebar-tree">
+                        <div className="sidebar-tree" onClick={(e) => {
+                            // If clicking empty space (not a tree item), reset selection to root
+                            if (e.target === e.currentTarget) setSelectedFolderId(null);
+                        }}>
                             {activeSidebarView === "explorer" && renderTree(files)}
                             {activeSidebarView === "search" && <SearchView files={files} onFileOpen={openFile} />}
                             {activeSidebarView === "database" && <DBExplorer onSelectTable={(id, db, table) => setActiveDB({ id, db, table })} />}
@@ -674,6 +711,7 @@ export default function IDELayout() {
                                     executionOutput={previewOutput}
                                     isExecuting={isExecuting}
                                     fileName={activeFile.name}
+                                    fullPath={getPathFromId(files, activeFileId)?.join('/')}
                                     content={activeFile.content}
                                     files={files}
                                 />
@@ -720,7 +758,7 @@ export default function IDELayout() {
                                     onCommand={handleTerminalCommand}
                                     onClear={() => setTerminals(prev => prev.map(t => t.id === activeTerminalId ? { ...t, output: [] } : t))}
                                     onClose={(e) => closeTerminal(e, activeTerminalId)}
-                                    path={`~${currentPath.length > 0 ? '/' + currentPath.join('/') : ''}`}
+                                    path={currentPath}
                                     busy={terminals.find(t => t.id === activeTerminalId)?.busy || false}
                                 />
                             )}
