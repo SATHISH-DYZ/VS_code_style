@@ -3,11 +3,12 @@ import React, { useMemo, useState, useEffect } from 'react';
 // Global cache for Babel transformations to speed up re-bundling
 const BABEL_CACHE = new Map();
 
-export default function WebPreview({ fileName, content, files, fullPath }) {
+export default function WebPreview({ fileName, content, files, fullPath, externalUrl }) {
     const [debouncedHtml, setDebouncedHtml] = useState("");
     const [babelLoaded, setBabelLoaded] = useState(!!window.Babel);
 
     useEffect(() => {
+        if (externalUrl) return; // Don't load Babel if we're in external mode
         if (!window.Babel) {
             console.log("[WebPreview] Loading Babel in parent window...");
             const script = document.createElement('script');
@@ -21,13 +22,13 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
                 document.head.appendChild(script);
             }
         }
-    }, []);
+    }, [externalUrl]);
 
     const fullHtml = useMemo(() => {
+        if (externalUrl) return ""; // No VFS bundling in external mode
         // 1. Flatten VFS and pre-transform JS/JSX
         const vfs = {};
         const thirdPartyDeps = new Set();
-
         const flatten = (items, path = "") => {
             items.forEach(item => {
                 const fullPathStr = path ? `${path}/${item.name}` : item.name;
@@ -293,11 +294,12 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
     return (
         <div style={{ width: '100%', height: '100%', background: 'white', overflow: 'hidden' }}>
             <iframe
-                srcDoc={debouncedHtml}
-                key={fileName}
+                src={externalUrl || undefined}
+                srcDoc={externalUrl ? undefined : debouncedHtml}
+                key={externalUrl || fileName}
                 style={{ width: '100%', height: '100%', border: 'none' }}
                 title="Web Preview"
-                sandbox="allow-scripts allow-forms allow-popups allow-modals"
+                sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin"
             />
         </div>
     );
