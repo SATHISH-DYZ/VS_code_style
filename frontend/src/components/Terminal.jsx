@@ -17,12 +17,25 @@ export default function Terminal({ output, onCommand, onClear, onClose, path = "
             setInput("");
         } else if (e.ctrlKey && e.key === "c") {
             // If user has text selected, let browser copy.
-            // detecting selection is tricky in React without ref to window/document, 
-            // but usually we want SIGINT in terminal context.
             if (!window.getSelection().toString()) {
                 e.preventDefault();
-                onCommand("\x03"); // Send SIGINT
+                onCommand("\x03", true); // Send SIGINT, set isRaw=true
             }
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            onCommand("\x1b[A", true);
+        } else if (e.key === "ArrowDown") {
+            e.preventDefault();
+            onCommand("\x1b[B", true);
+        } else if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            onCommand("\x1b[D", true);
+        } else if (e.key === "ArrowRight") {
+            e.preventDefault();
+            onCommand("\x1b[C", true);
+        } else if (e.key === "Tab") {
+            e.preventDefault();
+            onCommand("\t", true);
         }
     };
 

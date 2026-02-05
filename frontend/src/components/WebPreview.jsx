@@ -1,42 +1,86 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
+
+// Global cache for Babel transformations to speed up re-bundling
+const BABEL_CACHE = new Map();
 
 export default function WebPreview({ fileName, content, files, fullPath }) {
+    const [debouncedHtml, setDebouncedHtml] = useState("");
+    const [babelLoaded, setBabelLoaded] = useState(!!window.Babel);
+
+    useEffect(() => {
+        if (!window.Babel) {
+            console.log("[WebPreview] Loading Babel in parent window...");
+            const script = document.createElement('script');
+            script.src = "https://unpkg.com/@babel/standalone/babel.min.js";
+            script.id = "babel-standalone";
+            script.onload = () => {
+                console.log("[WebPreview] Babel loaded in parent window.");
+                setBabelLoaded(true);
+            };
+            if (!document.getElementById("babel-standalone")) {
+                document.head.appendChild(script);
+            }
+        }
+    }, []);
+
     const fullHtml = useMemo(() => {
-        // 1. Flatten VFS
+        // 1. Flatten VFS and pre-transform JS/JSX
         const vfs = {};
+        const thirdPartyDeps = new Set();
+
         const flatten = (items, path = "") => {
             items.forEach(item => {
                 const fullPathStr = path ? `${path}/${item.name}` : item.name;
                 if (item.isDir) {
                     if (item.children) flatten(item.children, fullPathStr);
                 } else {
-                    vfs[fullPathStr] = item.content || "";
+                    let code = item.content || "";
+                    const ext = item.name.split('.').pop().toLowerCase();
+
+                    if (['js', 'jsx', 'ts', 'tsx'].includes(ext)) {
+                        const cacheKey = `${fullPathStr}:${code}`;
+                        if (BABEL_CACHE.has(cacheKey)) {
+                            code = BABEL_CACHE.get(cacheKey);
+                        } else if (window.Babel) {
+                            try {
+                                const result = window.Babel.transform(code, {
+                                    presets: ['react', ['env', { modules: 'commonjs' }]],
+                                    filename: fullPathStr
+                                });
+                                BABEL_CACHE.set(cacheKey, result.code);
+                                code = result.code;
+                            } catch (e) {
+                                console.error("Babel transformation failed for", fullPathStr, e);
+                            }
+                        }
+                    }
+                    vfs[fullPathStr] = code;
                 }
             });
         };
         flatten(files);
 
-        // 2. Detect Framework
-        const hasVue = Object.keys(vfs).some(f => f.endsWith('.vue'));
-        const hasSvelte = Object.keys(vfs).some(f => f.endsWith('.svelte'));
-        const isReact = Object.keys(vfs).some(f => f.endsWith('.jsx') || f.match(/import\s+React/));
-
-        // 3. Discover third-party dependencies
-        const thirdPartyDeps = new Set();
+        // 2. Discover dependencies
         Object.values(vfs).forEach(code => {
             if (typeof code !== 'string') return;
-            const matches = code.matchAll(/import\s+.*?from\s+['"]([^./][^'"]*)['"]/g);
-            for (const match of matches) {
-                const dep = match[1];
-                if (!['react', 'react-dom', 'react-dom/client', 'lucide-react', 'framer-motion', 'axios', 'vue', 'svelte'].includes(dep)) {
-                    thirdPartyDeps.add(dep);
+            // Discovery from ESM
+            const esmMatches = code.matchAll(/import\s+(?:.*?from\s+)?['"]([^./][^'"]*)['"]/gs);
+            for (const m of esmMatches) {
+                if (!['react', 'react-dom', 'react-dom/client', 'axios', 'vue'].includes(m[1])) {
+                    thirdPartyDeps.add(m[1]);
+                }
+            }
+            // Discovery from CJS (post-transform)
+            const cjsMatches = code.matchAll(/require\(["']([^./][^'"]*)['"]\)/g);
+            for (const m of cjsMatches) {
+                if (!['react', 'react-dom', 'react-dom/client', 'axios', 'vue'].includes(m[1])) {
+                    thirdPartyDeps.add(m[1]);
                 }
             }
         });
 
-        // 4. Bundler Script
+        // 3. Bundler Script
         const escapeScriptTags = (str) => str.replace(/<\/script>/g, '<\\/script>');
-
         const entryPoint = fullPath || fileName;
 
         const bundlerScript = `
@@ -46,7 +90,7 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
                 window.__IS_HTML_MODE__ = ${entryPoint.endsWith('.html')};
                 window.__CACHE__ = {};
                 window.__EXTERNAL_DEPS__ = {};
-                
+
                 function log(m) { console.log("[Bundler]", m); }
                 
                 function showError(msg) {
@@ -76,9 +120,10 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
                     }
                     
                     const tryPaths = [
-                        target, 
-                        target + ".jsx", target + ".js", target + ".vue", target + ".svelte",
-                        "src/" + target, "src/" + target + ".jsx", "src/" + target + ".js", "src/" + target + ".vue"
+                        target, target + ".jsx", target + ".js",
+                        target + "/index.jsx", target + "/index.js",
+                        "src/" + target, "src/" + target + ".jsx", "src/" + target + ".js",
+                        "src/" + target + "/index.jsx", "src/" + target + "/index.js"
                     ];
                     
                     return tryPaths.find(p => window.__VFS__[p] !== undefined);
@@ -88,10 +133,11 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
                     if (path === 'react') return window.React;
                     if (path === 'react-dom' || path === 'react-dom/client') return window.ReactDOM;
                     if (path === 'vue') return window.Vue;
-                    if (path === 'lucide-react') return window.lucide;
                     if (path === 'axios') return window.axios;
                     
-                    if (window.__EXTERNAL_DEPS__[path]) return window.__EXTERNAL_DEPS__[path];
+                    if (window.__EXTERNAL_DEPS__[path]) {
+                        return window.__EXTERNAL_DEPS__[path].default || window.__EXTERNAL_DEPS__[path];
+                    }
                     
                     if (path.endsWith('.css')) return {};
                     if (path.match(/\\.(svg|png|jpg|jpeg|gif|webp)$/i)) return path; 
@@ -106,39 +152,19 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
                     const module = { exports: {} };
                     
                     try {
-                        let finalCode = "";
-                        if (resolved.endsWith('.vue')) {
-                            throw new Error("SFC (.vue) compilation requires backend support.");
-                        } else {
-                            const transformed = Babel.transform(code, {
-                                presets: ['react', 'env'],
-                                filename: resolved
-                            }).code;
-
-                            finalCode = transformed
-                                .replace(/export\\s+default\\s+/g, 'module.exports.default = module.exports = ')
-                                .replace(/export\\s+const\\s+([a-zA-Z0-9_$]+)/g, 'module.exports.$1 = ')
-                                .replace(/import\\s+(.*?)\\s+from\\s+['"](.*?)['"];?/g, (match, imports, from) => {
-                                     const imps = imports.trim().includes('{') ? imports : ('{ default: ' + imports + ' }');
-                                     return 'const ' + imps + ' = require("' + from + '");';
-                                })
-                                .replace(/import\\s+['"](.*?)['"];?/g, 'require("$1");');
-                        }
-
                         const customRequire = (p) => require(p, resolved);
-                        const fn = new Function('require', 'module', 'exports', 'React', 'ReactDOM', 'Vue', finalCode);
+                        const fn = new Function('require', 'module', 'exports', 'React', 'ReactDOM', 'Vue', code);
                         fn(customRequire, module, module.exports, window.React, window.ReactDOM, window.Vue);
                         
                         window.__CACHE__[resolved] = module.exports.default || module.exports;
                         return window.__CACHE__[resolved];
                     } catch (e) {
-                        showError("Error in " + resolved + ":\\n" + e.message);
+                        showError("Error in " + resolved + ":\\n" + e.message + "\\n\\n" + e.stack);
                         throw e;
                     }
                 }
 
                 async function boot() {
-                    log("Starting application...");
                     const status = document.getElementById('ide-status');
                     try {
                         let attempts = 0;
@@ -148,28 +174,18 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
                         }
 
                         if (window.__IS_HTML_MODE__) {
-                             log("HTML Mode active. Skipping React auto-boot.");
                              if (status) { status.style.opacity = '0'; setTimeout(() => status.style.display = 'none', 300); }
                              return;
                         }
 
-                        const keepIds = ['root', 'app', 'ide-status'];
-                        Array.from(document.body.children).forEach(child => {
-                            if (child.tagName !== 'SCRIPT' && !keepIds.includes(child.id)) {
-                                child.remove();
-                            }
-                        });
-
                         const potentialEntries = [
                             window.__ENTRY__, 
-                            'src/main.jsx', 'src/main.js', 'main.jsx', 'main.js', 'src/App.jsx', 'App.jsx', 'src/index.js', 'index.js'
+                            'src/index.js', 'src/main.jsx', 'src/main.js', 'main.jsx', 'main.js', 'src/App.jsx', 'App.jsx', 'index.js'
                         ];
                         const entry = potentialEntries.find(p => p && (window.__VFS__[p] || resolve(p)));
                         
                         if (entry) {
-                            log("Booting from: " + entry);
                             const exported = require(entry);
-                            
                             let root = document.getElementById('root') || document.getElementById('app');
                             if (!root) {
                                 root = document.createElement('div');
@@ -177,12 +193,9 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
                                 document.body.appendChild(root);
                             }
 
-                            // Only auto-mount if the root is empty AND we got a valid component.
-                            // If the root is NOT empty, it means index.js likely called root.render() itself!
                             if (root.innerHTML.trim() === '') {
                                 const Component = exported.default || exported;
-                                if (Component && typeof Component === 'function') {
-                                    log("Auto-mounting component...");
+                                if (Component && (typeof Component === 'function' || typeof Component === 'object')) {
                                     const React = window.React;
                                     const ReactDOM = window.ReactDOM;
                                     if (ReactDOM.createRoot) {
@@ -190,20 +203,9 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
                                     } else {
                                         ReactDOM.render(React.createElement(Component), root);
                                     }
-                                } else {
-                                    // If no component, it's ONLY an error if the root is STILL empty.
-                                    // React apps usually mount themselves in index.js, so this is often fine.
-                                    setTimeout(() => {
-                                        if (root.innerHTML.trim() === '') {
-                                             showError("Entry file " + entry + " executed, but we couldn't find a component to mount and the #root element is empty.\\n\\nMake sure you either export a component or call root.render() manually in your entry file.");
-                                        }
-                                    }, 500);
                                 }
                             }
-
                             if (status) { status.style.opacity = '0'; setTimeout(() => status.style.display = 'none', 300); }
-                        } else {
-                            showError("Could not find entry point. Checked: " + potentialEntries.join(", "));
                         }
                     } catch (err) {
                         showError(err.stack || err.message);
@@ -214,7 +216,7 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
             })();
         `;
 
-        // 5. HTML Construction
+        // 4. HTML Construction
         let htmlTemplate;
         if (fileName.endsWith('.html') && vfs[fileName]) {
             htmlTemplate = vfs[fileName];
@@ -228,19 +230,15 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
             return (vfs[clean] || vfs['src/' + clean]) ? `<!-- Stripped: ${src} -->` : match;
         });
 
-        // Core Dependencies
-        let deps = `
+        const deps = `
             <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
             <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-            <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
             <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
             <script src="https://cdn.tailwindcss.com"></script>
+            <script>window.__PENDING_DEPS__ = ${thirdPartyDeps.size}; window.__EXTERNAL_DEPS__ = {};</script>
         `;
 
-        if (hasVue) deps += `<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>`;
-
-        deps += `<script>window.__PENDING_DEPS__ = ${thirdPartyDeps.size}; window.__EXTERNAL_DEPS__ = {};</script>`;
-        deps += Array.from(thirdPartyDeps).map(dep => `
+        const externalDepScripts = Array.from(thirdPartyDeps).map(dep => `
             <script type="module">
                 import * as mod from 'https://esm.sh/${dep}';
                 window.__EXTERNAL_DEPS__['${dep}'] = mod;
@@ -252,12 +250,20 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
         const styles = cssFiles.map(f => `<style id="${f}">\n${vfs[f]}\n</style>`).join('\n');
 
         let finalHtml = htmlTemplate;
-        const statusOverlay = '<div id="ide-status" style="position:fixed;top:0;left:0;width:100%;height:100%;background:#1e1e1e;color:#888;display:flex;align-items:center;justify-content:center;font-family:sans-serif;z-index:99998;transition: opacity 0.3s;pointer-events:none;">Bundling application...</div>';
+        const statusOverlay = `
+            <div id="ide-status" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(30, 30, 30, 0.8);backdrop-filter:blur(10px);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;z-index:99998;transition:opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1);pointer-events:none;">
+                <div style="width:40px;height:40px;border:3px solid rgba(255,255,255,0.1);border-top-color:#007acc;border-radius:50%;animation:ide-spin 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;margin-bottom:16px;box-shadow:0 0 15px rgba(0,122,204,0.3);"></div>
+                <div style="font-size:14px;font-weight:500;letter-spacing:0.5px;opacity:0.8;animation:ide-pulse 2s ease-in-out infinite;">Bundling application...</div>
+                <style>
+                    @keyframes ide-spin { to { transform: rotate(360deg); } }
+                    @keyframes ide-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+                </style>
+            </div>`;
 
         if (finalHtml.includes('<head>')) {
-            finalHtml = finalHtml.replace('<head>', '<head>' + deps + styles);
+            finalHtml = finalHtml.replace('<head>', '<head>' + deps + externalDepScripts + styles);
         } else {
-            finalHtml = deps + styles + finalHtml;
+            finalHtml = deps + externalDepScripts + styles + finalHtml;
         }
 
         if (finalHtml.includes('<body>')) {
@@ -274,16 +280,24 @@ export default function WebPreview({ fileName, content, files, fullPath }) {
         }
 
         return finalHtml;
-    }, [content, fileName, files, fullPath]);
+    }, [content, fileName, files, fullPath, babelLoaded]);
+
+    useEffect(() => {
+        const handler = setTimeout(() => {
+            setDebouncedHtml(fullHtml);
+        }, 800); // 800ms debounce
+
+        return () => clearTimeout(handler);
+    }, [fullHtml]);
 
     return (
         <div style={{ width: '100%', height: '100%', background: 'white', overflow: 'hidden' }}>
             <iframe
-                srcDoc={fullHtml}
+                srcDoc={debouncedHtml}
                 key={fileName}
                 style={{ width: '100%', height: '100%', border: 'none' }}
                 title="Web Preview"
-                sandbox="allow-scripts"
+                sandbox="allow-scripts allow-forms allow-popups allow-modals"
             />
         </div>
     );

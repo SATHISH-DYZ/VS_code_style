@@ -227,6 +227,29 @@ process.on('SIGTERM', async () => {
 
 const PORT = process.env.PORT || 3001;
 
+// Define file change notification handler
+const onFileChange = async (userId) => {
+    try {
+        // console.log(`[Server] 🔄 Refreshing file list for user: ${userId}`);
+        const tree = await StorageService.listFiles(userId);
+
+        // Find sockets for this user and emit update
+        for (const [socketId, session] of activeSessions) {
+            if (session.userId === userId) {
+                const socket = io.sockets.sockets.get(socketId);
+                if (socket) {
+                    socket.emit('files:list:response', tree || []);
+                }
+            }
+        }
+    } catch (err) {
+        console.error(`[Server] Failed to push file update for ${userId}:`, err);
+    }
+};
+
+// Register callback
+StorageService.setWatcherCallback(onFileChange);
+
 StorageService.init().then(() => {
     server.listen(PORT, () => {
         console.log(`Teachgrid Backend running on port ${PORT}`);

@@ -221,11 +221,11 @@ class StorageService {
         // Expected structure: .../teachgrid-workspace/{userId}/{path/to/file}
         const workspaceDir = path.join(os.tmpdir(), 'teachgrid-workspace');
         const relativeToRoot = path.relative(workspaceDir, absPath).replace(/\\/g, '/');
-        
+
         // Extract userID (first segment)
         const parts = relativeToRoot.split('/');
         if (parts.length < 2) return; // Change in root or direct child of root (which should be user folders)
-        
+
         const userId = parts[0];
         const filePath = parts.slice(1).join('/');
         const name = parts[parts.length - 1];
@@ -243,9 +243,34 @@ class StorageService {
             } else if (event === 'unlink' || event === 'unlinkDir') {
                 await this.deleteFile(userId, filePath);
             }
+
+            // Notify via callback if registered (Debounced)
+            this.triggerChange(userId);
+
         } catch (err) {
             console.error(`[StorageService] ❌ Failed to sync FS event ${event} for ${relativeToRoot}:`, err.message);
         }
+    }
+
+    setWatcherCallback(callback) {
+        this.changeCallback = callback;
+        this.debounceTimers = new Map();
+    }
+
+    triggerChange(userId) {
+        if (!this.changeCallback) return;
+
+        if (this.debounceTimers && this.debounceTimers.has(userId)) {
+            clearTimeout(this.debounceTimers.get(userId));
+        }
+
+        if (!this.debounceTimers) this.debounceTimers = new Map();
+
+        this.debounceTimers.set(userId, setTimeout(() => {
+            // console.log(`[StorageService] 🔄 Triggering client refresh for user: ${userId}`);
+            this.changeCallback(userId);
+            this.debounceTimers.delete(userId);
+        }, 800)); // 800ms debounce
     }
 }
 

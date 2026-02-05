@@ -1,6 +1,13 @@
 import React, { useEffect, useState } from "react";
-import Editor from "@monaco-editor/react";
+import Editor, { loader } from "@monaco-editor/react";
 import "./codeEditor.css";
+
+// Configure Monaco to load from UNPKG instead of JSDelivr to bypass tracking prevention
+loader.config({
+    paths: {
+        vs: "https://unpkg.com/monaco-editor@0.55.1/min/vs"
+    }
+});
 
 export default function CodeEditor({ activeFile, onCodeChange }) {
     const [code, setCode] = useState("");

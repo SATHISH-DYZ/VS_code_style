@@ -1,11 +1,11 @@
-import { spawn } from 'child_process';
+import pty from 'node-pty';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 
 class TerminalManager {
     constructor() {
-        this.sessions = {}; // socketId -> { cwd: string, process: ChildProcess | null, initialOutputReceived: boolean }
+        this.sessions = {}; // socketId -> { cwd: string, pty: IPty | null, initialOutputReceived: boolean }
     }
 
     // Filter out Windows CMD header noise
@@ -37,7 +37,6 @@ class TerminalManager {
     }
 
     // Initialize a session with default CWD
-    // Initialize a session with default CWD
     createSession(socketId, socket, userId) {
         if (!this.sessions[socketId]) {
             // Default to Temp Workspace namespaced by userId
@@ -47,7 +46,7 @@ class TerminalManager {
             this.sessions[socketId] = {
                 cwd: root,
                 projectRoot: root,
-                process: null,
+                pty: null,
                 initialOutputReceived: false
             };
             if (socket) {
@@ -60,14 +59,13 @@ class TerminalManager {
     // Dispatch input: either as a new command or stdin for running process
     handleInput(socketId, data, socket) {
         const session = this.createSession(socketId, socket);
-        if (session.process) {
+        if (session.pty) {
             this.write(socketId, data);
         } else {
             this.execute(socketId, data, socket);
         }
     }
 
-    // Execute a command (spawn a process or handle internal commands like cd)
     // Execute a command (spawn a process or handle internal commands like cd)
     execute(socketId, command, socket) {
         const session = this.createSession(socketId, socket);
@@ -89,6 +87,23 @@ class TerminalManager {
         if (aliases[parts[0]]) {
             parts[0] = aliases[parts[0]];
             trimmedCmd = parts.join(' ');
+        }
+
+        // --- Smart Command Interceptor ---
+        // If user runs 'npm start' in a project that only has 'dev' (like Vite)
+        if (trimmedCmd === 'npm start') {
+            try {
+                const pkgPath = path.join(session.cwd, 'package.json');
+                if (fs.existsSync(pkgPath)) {
+                    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                    if (pkg.scripts && !pkg.scripts.start && pkg.scripts.dev) {
+                        socket.emit('output', `💡 Intelligence: No 'start' script found. Redirecting to 'npm run dev'...\r\n`);
+                        trimmedCmd = 'npm run dev';
+                    }
+                }
+            } catch (e) {
+                // Ignore parsing errors
+            }
         }
 
         // --- Handle 'cd' internally ---
@@ -118,7 +133,6 @@ class TerminalManager {
                     session.cwd = newPath;
 
                     // Emit RELATIVE path for UI (hides D:\...)
-                    // If outside project, it will show ../.. which is fine/honest without full path
                     const relPath = path.relative(session.projectRoot, newPath);
                     socket.emit('terminal:cwd', relPath);
                 }
@@ -132,40 +146,36 @@ class TerminalManager {
             return;
         }
 
-        // --- Spawn System Command ---
+        // --- Spawn System Command via node-pty ---
         try {
-            const proc = spawn(trimmedCmd, [], {
+            const shell = process.platform === 'win32' ? 'cmd.exe' : 'bash';
+            const args = process.platform === 'win32' ? ['/C', trimmedCmd] : ['-c', trimmedCmd];
+
+            const ptyProcess = pty.spawn(shell, args, {
+                name: 'xterm-color',
+                cols: 80,
+                rows: 30,
                 cwd: session.cwd,
-                shell: true,
-                stdio: ['pipe', 'pipe', 'pipe']
+                env: {
+                    ...process.env,
+                    // Ensure output is not buffered
+                    FORCE_COLOR: '1'
+                }
             });
 
-            session.process = proc; // Track active process for kill/stdin
-            session.initialOutputReceived = false; // Reset for new command
+            session.pty = ptyProcess;
+            session.initialOutputReceived = false;
             socket.emit('terminal:status', { busy: true });
 
-            proc.stdout.on('data', (data) => {
-                const cleaned = this.filterOutput(data.toString(), session);
-                if (cleaned.trim()) {
+            ptyProcess.onData((data) => {
+                const cleaned = this.filterOutput(data, session);
+                if (cleaned) {
                     socket.emit('output', cleaned);
                 }
             });
 
-            proc.stderr.on('data', (data) => {
-                const cleaned = this.filterOutput(data.toString(), session);
-                if (cleaned.trim()) {
-                    socket.emit('output', cleaned);
-                }
-            });
-
-            proc.on('close', (code) => {
-                session.process = null;
-                socket.emit('terminal:status', { busy: false });
-            });
-
-            proc.on('error', (err) => {
-                socket.emit('output', `Error spawning command: ${err.message}\r\n`);
-                session.process = null;
+            ptyProcess.onExit(({ exitCode, signal }) => {
+                session.pty = null;
                 socket.emit('terminal:status', { busy: false });
             });
         } catch (e) {
@@ -176,24 +186,27 @@ class TerminalManager {
     // Write to stdin of the currently running process (for interactive checks like "Are you sure? y/n")
     write(socketId, data) {
         const session = this.sessions[socketId];
-        if (session && session.process && session.process.stdin) {
+        if (session && session.pty) {
             try {
-                session.process.stdin.write(data);
+                session.pty.write(data);
             } catch (err) {
-                // Ignore write errors to closed pipes
+                // Ignore write errors
             }
         }
     }
 
     resize(socketId, cols, rows) {
-        // Not applicable for spawn, but kept for API compatibility
+        const session = this.sessions[socketId];
+        if (session && session.pty) {
+            session.pty.resize(cols, rows);
+        }
     }
 
     kill(socketId) {
         const session = this.sessions[socketId];
         if (session) {
-            if (session.process) {
-                session.process.kill();
+            if (session.pty) {
+                session.pty.kill();
             }
             delete this.sessions[socketId];
         }

@@ -215,6 +215,7 @@ export default function IDELayout() {
             if (socketRef.current?.connected) {
                 socketRef.current.emit("file:save", { path: fullPath, content: activeFile.content });
                 console.log("[Save] Saved to backend:", fullPath);
+                setHasUnsavedChanges(false);
             }
         }
         setTimeout(() => setIsSaving(false), 800);
@@ -391,18 +392,19 @@ export default function IDELayout() {
         return () => window.removeEventListener('keydown', handleGlobalKeyDown);
     }, [handleRunCode, handleSave, handleCreateItem]);
 
+    const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
     useEffect(() => {
-        if (!activeFileId || files.length === 0) return;
-        const timeoutId = setTimeout(() => {
-            const file = openFiles.find(f => f.id === activeFileId);
-            if (!file) return;
-            const pathArr = getPathFromId(files, activeFileId);
-            if (pathArr && socketRef.current?.connected) {
-                socketRef.current.emit("file:save", { path: pathArr.join('/'), content: file.content });
+        const handleBeforeUnload = (e) => {
+            if (hasUnsavedChanges) {
+                const msg = "You have unsaved changes. Are you sure you want to leave?";
+                e.returnValue = msg;
+                return msg;
             }
-        }, 2000);
-        return () => clearTimeout(timeoutId);
-    }, [openFiles, activeFileId, files, getPathFromId]);
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, [hasUnsavedChanges]);
 
     /* ================= RENDER HELPERS ================= */
 
@@ -460,7 +462,14 @@ export default function IDELayout() {
         }
     };
 
-    const handleTerminalCommand = cmd => {
+    const handleTerminalCommand = (cmd, isRaw = false) => {
+        if (isRaw) {
+            if (socketRef.current?.connected) {
+                socketRef.current.emit("terminal:input", cmd);
+            }
+            return;
+        }
+
         const rawCmd = cmd.trim();
         // Allow empty commands if sending newline to stdin
         if (rawCmd === '' && terminals.find(t => t.id === activeTerminalId)?.busy) {
@@ -471,12 +480,7 @@ export default function IDELayout() {
 
         setTerminals(prev => prev.map(t => {
             if (t.id === activeTerminalId) {
-                // If busy, we are sending stdin to a running process (which usually echoes back).
-                // So DO NOT print it locally to avoid double echo.
-                if (t.busy) {
-                    return t;
-                }
-                // If not busy, it's a shell command, so show the prompt line.
+                if (t.busy) return t;
                 const promptPath = currentPath ? `\\${currentPath}` : "";
                 const logLine = `Teachgrid${promptPath}> ${rawCmd}`;
                 return { ...t, output: [...t.output, logLine] };
@@ -485,13 +489,8 @@ export default function IDELayout() {
         }));
 
         if (socketRef.current?.connected) {
-            // If it's a special signal like (Ctrl+C), send as is.
-            if (rawCmd === '\x03') {
-                socketRef.current.emit("terminal:input", rawCmd);
-            } else {
-                // Use \r\n for Windows CMD PTY compatibility during interactive sessions
-                socketRef.current.emit("terminal:input", rawCmd + '\r\n');
-            }
+            // Use \r\n for Windows CMD PTY compatibility
+            socketRef.current.emit("terminal:input", rawCmd + '\r\n');
         }
     };
 
@@ -617,6 +616,7 @@ export default function IDELayout() {
                                 <CodeEditor
                                     activeFile={activeFile}
                                     onCodeChange={code => {
+                                        setHasUnsavedChanges(true);
                                         setOpenFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content: code } : f));
                                         setFiles(prev => {
                                             const updateItemRecursive = (items, id, newCode) => {
