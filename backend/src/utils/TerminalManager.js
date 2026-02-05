@@ -2,7 +2,6 @@ import pty from 'node-pty';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { exec } from 'child_process';
 
 class TerminalManager {
     constructor() {
@@ -35,35 +34,6 @@ class TerminalManager {
         cleanedData = cleanedData.replace(/\x1b\]0;[^\x07]*\x07/g, '');
 
         return cleanedData;
-    }
-
-    // Scan for listening ports on the backend
-    async scanPorts(socket, session) {
-        return new Promise((resolve) => {
-            const command = process.platform === 'win32'
-                ? 'netstat -ano -p tcp | findstr LISTENING'
-                : 'ss -tlnp';
-
-            exec(command, (error, stdout) => {
-                if (error) return resolve([]);
-
-                const ports = new Set();
-                const lines = stdout.split('\n');
-                lines.forEach(line => {
-                    const match = line.match(/:(\d+)\s+.*LISTENING/);
-                    if (match) {
-                        const port = parseInt(match[1]);
-                        // Filter out common system ports or the IDE's own ports
-                        if (port > 1024 && port !== 3000 && port !== 3001) {
-                            ports.add(port);
-                        }
-                    }
-                });
-                const portList = Array.from(ports);
-                if (socket) socket.emit('terminal:ports', portList);
-                resolve(portList);
-            });
-        });
     }
 
     // Initialize a session with default CWD
@@ -207,11 +177,7 @@ class TerminalManager {
             ptyProcess.onExit(({ exitCode, signal }) => {
                 session.pty = null;
                 socket.emit('terminal:status', { busy: false });
-                this.scanPorts(socket, session);
             });
-
-            // Also scan immediately in case it's a long running dev server that opens port quickly
-            setTimeout(() => this.scanPorts(socket, session), 2000);
         } catch (e) {
             socket.emit('output', `Failed to execute: ${e.message}\r\n`);
         }

@@ -289,43 +289,6 @@
     margin: 0 4px;
 }
 
-.port-input-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 4px;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid var(--border-main);
-    border-radius: 4px;
-    transition: all 0.2s ease;
-}
-
-.port-input-wrapper:hover,
-.port-input-wrapper:focus-within {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: var(--accent);
-}
-
-.port-label {
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--fg-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-}
-
-.port-input {
-    width: 45px;
-    background: transparent;
-    border: none;
-    color: var(--accent);
-    font-size: 12px;
-    font-weight: 600;
-    padding: 2px 0;
-    outline: none;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-}
-
 /* CONTENT AREA */
 .ide-content-area {
     flex: 1;

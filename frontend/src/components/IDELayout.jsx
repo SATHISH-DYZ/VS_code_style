@@ -68,7 +68,6 @@ export default function IDELayout() {
     const [isSidebarVisible, setIsSidebarVisible] = useState(true);
     const [activeDB, setActiveDB] = useState(null); // { id, dbName, table }
     const [executionMode, setExecutionMode] = useState("auto");
-    const [externalPort, setExternalPort] = useState("");
 
     const socketRef = useRef(null);
     const activeTerminalIdRef = useRef(activeTerminalId);
@@ -604,19 +603,6 @@ export default function IDELayout() {
                                 <Save size={14} />
                             </div>
 
-                            <div className="action-divider" />
-
-                            <div className="port-input-wrapper">
-                                <span className="port-label">Port:</span>
-                                <input
-                                    type="text"
-                                    className="port-input"
-                                    placeholder="5173"
-                                    value={externalPort}
-                                    onChange={(e) => setExternalPort(e.target.value)}
-                                />
-                            </div>
-
                             <div className="action-btn">
                                 <MoreHorizontal size={14} />
                             </div>
@@ -690,7 +676,6 @@ export default function IDELayout() {
                                     fullPath={getPathFromId(files, activeFileId)?.join('/')}
                                     content={activeFile.content}
                                     files={files}
-                                    externalUrl={externalPort ? `http://localhost:${externalPort}` : null}
                                 />
                             </div>
                         )}
